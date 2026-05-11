@@ -1,0 +1,61 @@
+FROM nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    TZ=Asia/Seoul \
+    PIP_NO_CACHE_DIR=1
+
+# 기본 패키지 설치
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3.10 \
+        python3-pip \
+        python3.10-dev \
+        git \
+        wget \
+        curl \
+        sudo \
+        ca-certificates \
+        libgl1 \
+        libglib2.0-0 \
+        htop \
+        screenfetch \
+    && ln -sf /usr/bin/python3.10 /usr/bin/python \
+    && ln -sf /usr/bin/pip3 /usr/bin/pip \
+    && rm -rf /var/lib/apt/lists/*
+
+# pip 최신화
+RUN pip install --upgrade pip setuptools wheel
+
+# PyTorch (CUDA 12.1) 설치 - RTX 4070 Ti (Ada, SM 8.9) 지원
+RUN pip install torch==2.4.1 torchvision==0.19.1 --index-url https://download.pytorch.org/whl/cu121
+
+# DINOv3 관련 라이브러리 (transformers 4.56+ 에서 DINOv3 지원)
+RUN pip install \
+        "transformers>=4.56.0" \
+        "huggingface_hub>=0.24.0" \
+        accelerate \
+        safetensors \
+        pillow \
+        numpy \
+        matplotlib \
+        scikit-learn \
+        opencv-python-headless \
+        requests \
+        tqdm \
+        nvitop
+
+# ---- non-root 사용자 생성 (호스트 uid/gid에 맞춤) ----
+ARG USERNAME=iw
+ARG USER_UID=1000
+ARG USER_GID=1000
+
+RUN groupadd --gid ${USER_GID} ${USERNAME} \
+    && useradd --uid ${USER_UID} --gid ${USER_GID} -m -s /bin/bash ${USERNAME} \
+    && echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/${USERNAME} \
+    && chmod 0440 /etc/sudoers.d/${USERNAME}
+
+USER ${USERNAME}
+WORKDIR /home/${USERNAME}
+
+CMD ["/bin/bash"]
