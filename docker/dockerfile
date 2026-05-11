@@ -7,6 +7,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1
 
 # 기본 패키지 설치
+# - ffmpeg: lerobot 비디오 디코딩(pyav/torchvision)에서 시스템 libav* 라이브러리 필요
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3.10 \
         python3-pip \
@@ -18,7 +19,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         libgl1 \
         libglib2.0-0 \
+        ffmpeg \
         htop \
+        tmux \
         screenfetch \
     && ln -sf /usr/bin/python3.10 /usr/bin/python \
     && ln -sf /usr/bin/pip3 /usr/bin/pip \
@@ -32,9 +35,11 @@ RUN pip install --upgrade pip setuptools wheel
 RUN pip install torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cu126
 
 # DINOv3 관련 라이브러리 (transformers 4.56+ 에서 DINOv3 지원)
+# transformers 는 4.x 로 핀: 5.x 는 huggingface_hub>=1.5 를 요구하지만
+# lerobot 이 huggingface_hub 0.x 를 내려받기 때문에 충돌이 발생함.
 RUN pip install \
-        "transformers>=4.56.0" \
-        "huggingface_hub>=0.24.0" \
+        "transformers>=4.56,<5" \
+        "huggingface_hub>=0.24,<1" \
         accelerate \
         safetensors \
         pillow \
@@ -44,7 +49,12 @@ RUN pip install \
         opencv-python-headless \
         requests \
         tqdm \
+        h5py \
+        einops \
         nvitop
+
+# LeRobot (Robocasa 등 LeRobot 포맷 데이터셋 로드용)
+RUN pip install lerobot
 
 # ---- non-root 사용자 생성 (호스트 uid/gid에 맞춤) ----
 ARG USERNAME=iw
