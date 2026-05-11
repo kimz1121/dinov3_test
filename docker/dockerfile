@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
+FROM nvidia/cuda:12.6.3-cudnn-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -27,8 +27,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # pip 최신화
 RUN pip install --upgrade pip setuptools wheel
 
-# PyTorch (CUDA 12.1) 설치 - RTX 4070 Ti (Ada, SM 8.9) 지원
-RUN pip install torch==2.4.1 torchvision==0.19.1 --index-url https://download.pytorch.org/whl/cu121
+# PyTorch (CUDA 12.6) 설치 - RTX 4070 Ti (Ada, SM 8.9) 지원
+# transformers 5.x 의 torch.library.custom_op 사용을 위해 torch>=2.5 필요
+RUN pip install torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cu126
 
 # DINOv3 관련 라이브러리 (transformers 4.56+ 에서 DINOv3 지원)
 RUN pip install \
