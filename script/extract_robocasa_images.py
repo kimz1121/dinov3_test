@@ -41,6 +41,9 @@ DATASETS: dict[str, str] = {
         "kimz1121/robocasa_spatial_camrandom_images_pretrain_atomic_"
         "AdjustToasterOvenTemperature"
     ),
+    "CloseBlenderLid": "kimz1121/robocasa_spatial_camrandom_images_pretrain_atomic_CloseBlenderLid",
+    "CloseDrawer": "kimz1121/robocasa_spatial_camrandom_images_pretrain_atomic_CloseDrawer",
+    "CloseElectricKettleLid": "kimz1121/robocasa_spatial_camrandom_images_pretrain_atomic_CloseElectricKettleLid",
 }
 
 # torchcodec이 PyTorch 2.7과 ABI 비호환이라 pyav로 고정.

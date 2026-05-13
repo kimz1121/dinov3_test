@@ -43,6 +43,8 @@ CAMERA_ABBREV = {
     "robot0_agentview_left": "L",
     "robot0_agentview_right": "R",
     "robot0_eye_in_hand": "H",
+    "agentview": "A",
+    "eye_in_hand": "H",
 }
 
 

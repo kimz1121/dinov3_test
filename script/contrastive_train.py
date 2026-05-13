@@ -360,6 +360,68 @@ def ortho_loss(z_task: torch.Tensor, z_nuis: torch.Tensor) -> torch.Tensor:
 
 
 # ---------------------------------------------------------------------------
+# k-NN probe — disentanglement 평가
+# ---------------------------------------------------------------------------
+
+
+@torch.no_grad()
+def compute_embeddings(
+    model: "DisentangleModel",
+    loader: DataLoader,
+    device: str,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """전체 loader 를 돌려 (z_task, z_nuis, task_id, camera_id) 모음 반환."""
+    model.eval()
+    zs_t, zs_n, ys_t, ys_c = [], [], [], []
+    for batch in loader:
+        patches, task_id, cam_id, _, _ = batch
+        patches = patches.to(device, non_blocking=True)
+        z_task, z_nuis = model(patches)
+        zs_t.append(z_task.cpu())
+        zs_n.append(z_nuis.cpu())
+        ys_t.append(task_id)
+        ys_c.append(cam_id)
+    return torch.cat(zs_t), torch.cat(zs_n), torch.cat(ys_t), torch.cat(ys_c)
+
+
+def knn_accuracy(
+    feat_train: torch.Tensor,
+    y_train: torch.Tensor,
+    feat_test: torch.Tensor,
+    y_test: torch.Tensor,
+    k: int = 10,
+) -> float:
+    """L2-정규화 가정. cosine sim top-k majority vote 정확도."""
+    k = min(k, feat_train.shape[0])
+    sim = feat_test @ feat_train.T                             # (Nte, Ntr)
+    _, idx = sim.topk(k, dim=-1)
+    nn_labels = y_train[idx]                                   # (Nte, k)
+    pred = nn_labels.mode(dim=-1).values
+    return (pred == y_test).float().mean().item()
+
+
+def run_probes(
+    model: "DisentangleModel",
+    train_loader: DataLoader,
+    test_loader: DataLoader,
+    device: str,
+    k: int = 10,
+) -> dict[str, float]:
+    """4 종 probe — 좋은 disentangle 의 신호:
+        task_on_z_task ↑,  cam_on_z_nuis ↑  (정상 신호 잘 잡힘)
+        cam_on_z_task  ↓,  task_on_z_nuis ↓ (반대 신호 누설 적음)
+    """
+    zt_tr, zn_tr, yt_tr, yc_tr = compute_embeddings(model, train_loader, device)
+    zt_te, zn_te, yt_te, yc_te = compute_embeddings(model, test_loader, device)
+    return {
+        "task_on_z_task": knn_accuracy(zt_tr, yt_tr, zt_te, yt_te, k),
+        "cam_on_z_task":  knn_accuracy(zt_tr, yc_tr, zt_te, yc_te, k),
+        "task_on_z_nuis": knn_accuracy(zn_tr, yt_tr, zn_te, yt_te, k),
+        "cam_on_z_nuis":  knn_accuracy(zn_tr, yc_tr, zn_te, yc_te, k),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Train / eval epoch
 # ---------------------------------------------------------------------------
 
@@ -490,6 +552,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--num-workers", type=int, default=4)
     p.add_argument("--log-every", type=int, default=20)
     p.add_argument("--ckpt-every", type=int, default=10)
+    p.add_argument(
+        "--probe-every",
+        type=int,
+        default=1,
+        help="N epoch 마다 k-NN probe 실행 (0 이면 비활성)",
+    )
+    p.add_argument("--probe-k", type=int, default=10)
     return p.parse_args()
 
 
@@ -530,6 +599,14 @@ def main() -> None:
     )
     test_loader = DataLoader(
         test_ds,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.num_workers,
+        pin_memory=(device == "cuda"),
+    )
+    # probe 용 — train 전체를 순차로 한 번 인코딩
+    probe_train_loader = DataLoader(
+        train_ds,
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=args.num_workers,
@@ -604,11 +681,18 @@ def main() -> None:
         )
         scheduler.step()
 
+        probe_stats: dict[str, float] | None = None
+        if args.probe_every and (epoch + 1) % args.probe_every == 0:
+            probe_stats = run_probes(
+                model, probe_train_loader, test_loader, device, k=args.probe_k
+            )
+
         row = {
             "epoch": epoch,
             "phase": "epoch_summary",
             "train": train_stats,
             "test": test_stats,
+            "probe": probe_stats,
             "lr": optimizer.param_groups[0]["lr"],
         }
         log_fp.write(json.dumps(row) + "\n")
@@ -626,6 +710,14 @@ def main() -> None:
             f"nuis={test_stats['L_nuis']:.4f}  "
             f"orth={test_stats['L_orth']:.4f}"
         )
+        if probe_stats is not None:
+            print(
+                f"  [probe] task@z_t={probe_stats['task_on_z_task']:.3f}  "
+                f"cam@z_t={probe_stats['cam_on_z_task']:.3f}  "
+                f"(↓ disentangle)  |  "
+                f"cam@z_n={probe_stats['cam_on_z_nuis']:.3f}  "
+                f"task@z_n={probe_stats['task_on_z_nuis']:.3f}  (↓ disentangle)"
+            )
 
         if test_stats["loss"] < best_test_loss:
             best_test_loss = test_stats["loss"]

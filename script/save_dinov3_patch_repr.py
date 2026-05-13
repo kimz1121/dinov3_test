@@ -104,6 +104,12 @@ def process_task(
     cameras: list[str] = task_entry["cameras"]
     episodes: list[dict] = task_entry["episodes"]
 
+    # 이전 크래시로 남은 .tmp 가 있으면 청소 (skip 판정 전에 처리).
+    tmp_path = out_path.with_suffix(out_path.suffix + ".tmp")
+    if tmp_path.exists():
+        print(f"  [info] stale tmp 삭제: {tmp_path.name}")
+        tmp_path.unlink()
+
     if out_path.exists() and not overwrite:
         print(f"  [skip] {out_path} exists (use --overwrite)")
         return 0, 0
@@ -116,62 +122,71 @@ def process_task(
     n_frames_written = 0
     n_clips_written = 0
 
-    with h5py.File(out_path, "w") as f:
-        f.attrs["model_id"] = embedder.model_id
-        f.attrs["embedder"] = embedder.name
-        f.attrs["sizes"] = np.array(list(embedder.sizes), dtype=np.int32)
-        f.attrs["dim"] = D
-        f.attrs["patch_h"] = H
-        f.attrs["patch_w"] = W
-        f.attrs["dtype"] = str(np.dtype(out_dtype))
-        f.attrs["cameras"] = np.array(cameras, dtype=h5py.string_dtype())
-        f.attrs["num_clips"] = num_clips
-        f.attrs["clip_length"] = clip_length
-        f.attrs["sampling_mode"] = sampling_mode
-        f.attrs["seed"] = seed
-        f.attrs["manifest_path"] = str(manifest_path)
-        f.attrs["manifest_sha256"] = manifest_sha256
+    # Atomic write: tmp 에 다 쓰고 성공 시에만 진짜 이름으로 rename.
+    # 중간에 죽으면 except 가 tmp 삭제 → skip-if-exists 가 다음에 정상 동작.
+    try:
+        with h5py.File(tmp_path, "w") as f:
+            f.attrs["model_id"] = embedder.model_id
+            f.attrs["embedder"] = embedder.name
+            f.attrs["sizes"] = np.array(list(embedder.sizes), dtype=np.int32)
+            f.attrs["dim"] = D
+            f.attrs["patch_h"] = H
+            f.attrs["patch_w"] = W
+            f.attrs["dtype"] = str(np.dtype(out_dtype))
+            f.attrs["cameras"] = np.array(cameras, dtype=h5py.string_dtype())
+            f.attrs["num_clips"] = num_clips
+            f.attrs["clip_length"] = clip_length
+            f.attrs["sampling_mode"] = sampling_mode
+            f.attrs["seed"] = seed
+            f.attrs["manifest_path"] = str(manifest_path)
+            f.attrs["manifest_sha256"] = manifest_sha256
 
-        grp = f.create_group("data")
+            grp = f.create_group("data")
 
-        for ep in tqdm(episodes, desc=f"  {task}", unit="ep"):
-            ep_idx: int = ep["ep_idx"]
-            demo_grp = grp.create_group(f"demo_{ep_idx:03d}")
+            for ep in tqdm(episodes, desc=f"  {task}", unit="ep"):
+                ep_idx: int = ep["ep_idx"]
+                demo_grp = grp.create_group(f"demo_{ep_idx:03d}")
 
-            for clip in ep["clips"]:
-                clip_id: int = clip["clip_id"]
-                frames_global: list[int] = clip["frames_global"]
-                n = len(frames_global)
-                start_local: int = clip["start_local"]
+                for clip in ep["clips"]:
+                    clip_id: int = clip["clip_id"]
+                    frames_global: list[int] = clip["frames_global"]
+                    n = len(frames_global)
+                    start_local: int = clip["start_local"]
 
-                clip_grp = demo_grp.create_group(f"clip_{clip_id}")
+                    clip_grp = demo_grp.create_group(f"clip_{clip_id}")
 
-                # (camera × n) 평탄화해 한 번에 encode
-                flat_paths: list[Path] = []
-                for cam in cameras:
-                    for f_idx in range(n):
-                        flat_paths.append(
-                            png_path(png_root, task, cam, ep_idx, clip_id, f_idx)
+                    # (camera × n) 평탄화해 한 번에 encode
+                    flat_paths: list[Path] = []
+                    for cam in cameras:
+                        for f_idx in range(n):
+                            flat_paths.append(
+                                png_path(png_root, task, cam, ep_idx, clip_id, f_idx)
+                            )
+                    feats = encode_in_batches(embedder, flat_paths, batch_size)
+                    # (cam_count * n, H, W, D) → (cam, n, H, W, D)
+                    feats = feats.reshape(len(cameras), n, H, W, D)
+                    feats_np = feats.numpy().astype(out_dtype)
+
+                    for ci, cam in enumerate(cameras):
+                        dset = clip_grp.create_dataset(
+                            cam,
+                            data=feats_np[ci],
+                            compression="gzip",
+                            compression_opts=4,
                         )
-                feats = encode_in_batches(embedder, flat_paths, batch_size)
-                # (cam_count * n, H, W, D) → (cam, n, H, W, D)
-                feats = feats.reshape(len(cameras), n, H, W, D)
-                feats_np = feats.numpy().astype(out_dtype)
+                        dset.attrs["frames_global"] = np.array(
+                            frames_global, dtype=np.int64
+                        )
+                        dset.attrs["start_local"] = start_local
 
-                for ci, cam in enumerate(cameras):
-                    dset = clip_grp.create_dataset(
-                        cam,
-                        data=feats_np[ci],
-                        compression="gzip",
-                        compression_opts=4,
-                    )
-                    dset.attrs["frames_global"] = np.array(
-                        frames_global, dtype=np.int64
-                    )
-                    dset.attrs["start_local"] = start_local
-
-                n_clips_written += 1
-                n_frames_written += n * len(cameras)
+                    n_clips_written += 1
+                    n_frames_written += n * len(cameras)
+        # 모든 쓰기 성공: tmp → 진짜 이름. POSIX rename 은 atomic.
+        tmp_path.replace(out_path)
+    except BaseException:
+        # KeyboardInterrupt, OOM, h5py 에러 등 어떤 중단이든 partial tmp 청소.
+        tmp_path.unlink(missing_ok=True)
+        raise
 
     print(
         f"  saved → {out_path}  "
