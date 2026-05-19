@@ -34,16 +34,18 @@ warnings.filterwarnings("ignore", category=UserWarning, module="torchvision")
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
 # short name → HuggingFace repo id 매핑
+_PREFIX = "kimz1121/robocasa_spatial_camrandom_images_pretrain_atomic_"
 DATASETS: dict[str, str] = {
-    "CheesyBread": "kimz1121/robocasa_spatial_camrandom_images_pretrain_atomic_CheesyBread",
-    "CloseCabinet": "kimz1121/robocasa_spatial_camrandom_images_pretrain_atomic_CloseCabinet",
-    "AdjustToasterOvenTemperature": (
-        "kimz1121/robocasa_spatial_camrandom_images_pretrain_atomic_"
-        "AdjustToasterOvenTemperature"
-    ),
-    "CloseBlenderLid": "kimz1121/robocasa_spatial_camrandom_images_pretrain_atomic_CloseBlenderLid",
-    "CloseDrawer": "kimz1121/robocasa_spatial_camrandom_images_pretrain_atomic_CloseDrawer",
-    "CloseElectricKettleLid": "kimz1121/robocasa_spatial_camrandom_images_pretrain_atomic_CloseElectricKettleLid",
+    "CheesyBread": _PREFIX + "CheesyBread",
+    "CloseCabinet": _PREFIX + "CloseCabinet",
+    "AdjustToasterOvenTemperature": _PREFIX + "AdjustToasterOvenTemperature",
+    "CloseBlenderLid": _PREFIX + "CloseBlenderLid",
+    "CloseDrawer": _PREFIX + "CloseDrawer",
+    "CloseElectricKettleLid": _PREFIX + "CloseElectricKettleLid",
+    "AdjustWaterTemperature": _PREFIX + "AdjustWaterTemperature",
+    "CloseDishwasher": _PREFIX + "CloseDishwasher",
+    "CloseFridge": _PREFIX + "CloseFridge",
+    "CloseFridgeDrawer": _PREFIX + "CloseFridgeDrawer",
 }
 
 # torchcodec이 PyTorch 2.7과 ABI 비호환이라 pyav로 고정.

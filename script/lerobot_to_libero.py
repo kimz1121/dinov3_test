@@ -13,13 +13,17 @@ We additionally write actions / dones / rewards / num_samples / states /
 robot_states so downstream robomimic-style loaders also work. They are
 placeholders where the LeRobot data does not provide an equivalent.
 
-Mapping (RoboCasa PandaOmron LeRobot -> LIBERO):
-    observation.images.robot0_agentview_left  -> obs/agentview_rgb   (configurable)
-    observation.images.robot0_eye_in_hand     -> obs/eye_in_hand_rgb
-    observation.state[7:10]  (ee_rel xyz)     -> obs/ee_states[0:3]
-    observation.state[10:13] (ee_rel qx,qy,qz)-> obs/ee_states[3:6]
-    observation.state[14:16] (gripper l, r)   -> obs/gripper_states
-    joint_states                              -> zeros (LeRobot data has no joints)
+Mapping (RoboCasa LeRobot -> LIBERO). Image keys and state-vector layout are
+auto-detected from ds.meta.info["features"], so both PandaOmron-style and
+DAVIAN-Robotics/robocasa-H50-style datasets work:
+
+    observation.images.robot0_agentview_left[_image]  -> obs/agentview_rgb (configurable)
+    observation.images.robot0_eye_in_hand[_image]     -> obs/eye_in_hand_rgb
+
+    observation.state[eef_pos]   (3)  -> obs/ee_states[0:3]
+    observation.state[eef_quat]  (3)  -> obs/ee_states[3:6]   (xyz of xyzw quat; w dropped)
+    observation.state[gripper_qpos] (2) -> obs/gripper_states
+    joint_states                       -> zeros (LeRobot data has no joints)
 """
 
 import argparse
@@ -37,6 +41,67 @@ AGENTVIEW_CHOICES = {
     "right": "observation.images.robot0_agentview_right",
 }
 EYE_IN_HAND_KEY = "observation.images.robot0_eye_in_hand"
+
+
+def _resolve_image_key(features: dict, base: str) -> str:
+    """Find which variant of an image key actually exists in this dataset.
+
+    DAVIAN-Robotics/robocasa-H50 names cameras with an `_image` suffix
+    (`observation.images.robot0_agentview_left_image`); other RoboCasa LeRobot
+    variants omit it. Try both.
+    """
+    for cand in (base, base + "_image"):
+        if cand in features:
+            return cand
+    raise KeyError(
+        f"Neither {base!r} nor {base + '_image'!r} found in dataset features. "
+        f"Available image keys: {[k for k in features if k.startswith('observation.images.')]}"
+    )
+
+
+def _resolve_state_layout(features: dict) -> dict:
+    """Locate eef_pos / eef_quat / gripper_qpos slices inside observation.state.
+
+    Returns a dict of (start, stop) tuples keyed by 'eef_pos', 'eef_quat',
+    'gripper_qpos'. Falls back to PandaOmron defaults if names are missing.
+    """
+    state = features.get("observation.state")
+    if state is None:
+        raise KeyError("observation.state not found in dataset features")
+    names = state.get("names") or []
+    name_to_idx = {n: i for i, n in enumerate(names)}
+
+    def _find(prefix: str, n: int):
+        idxs = [name_to_idx[f"{prefix}_{i}"] for i in range(n) if f"{prefix}_{i}" in name_to_idx]
+        if len(idxs) != n:
+            return None
+        # Require a contiguous run.
+        if max(idxs) - min(idxs) != n - 1:
+            return None
+        return (min(idxs), max(idxs) + 1)
+
+    layout = {}
+    # Try both common naming variants.
+    for key, candidates, length in (
+        ("eef_pos", ("robot0_base_to_eef_pos", "robot0_eef_pos"), 3),
+        ("eef_quat", ("robot0_base_to_eef_quat", "robot0_eef_quat"), 4),
+        ("gripper_qpos", ("robot0_gripper_qpos",), 2),
+    ):
+        for prefix in candidates:
+            rng = _find(prefix, length)
+            if rng is not None:
+                layout[key] = rng
+                break
+    if not {"eef_pos", "eef_quat", "gripper_qpos"} <= set(layout):
+        # PandaOmron-style fallback (the original hardcoded slicing).
+        print(f"[warn] could not auto-detect state layout from names; "
+              f"falling back to PandaOmron defaults. Names seen: {names}")
+        layout = {
+            "eef_pos": (7, 10),
+            "eef_quat": (10, 14),
+            "gripper_qpos": (14, 16),
+        }
+    return layout
 
 
 def to_uint8_hwc(img_tensor: torch.Tensor, target_size: int | None) -> np.ndarray:
@@ -62,24 +127,40 @@ def _episode_bounds(ds: LeRobotDataset, ep_idx: int) -> tuple[int, int]:
     return _scalar(ep["dataset_from_index"]), _scalar(ep["dataset_to_index"])
 
 
-def collect_episode(ds: LeRobotDataset, ep_idx: int, agentview_key: str, image_size: int | None):
+def collect_episode(
+    ds: LeRobotDataset,
+    ep_idx: int,
+    agentview_key: str,
+    eye_in_hand_key: str,
+    state_layout: dict,
+    image_size: int | None,
+):
     ep_from, ep_to = _episode_bounds(ds, ep_idx)
     T = ep_to - ep_from
 
+    state_dim = ds.meta.info["features"]["observation.state"]["shape"][0]
+    action_dim = ds.meta.info["features"]["action"]["shape"][0]
+
     agentview = np.empty((T, image_size or 256, image_size or 256, 3), dtype=np.uint8)
     eye_in_hand = np.empty_like(agentview)
-    state = np.empty((T, 16), dtype=np.float32)
-    action = np.empty((T, 12), dtype=np.float32)
+    state = np.empty((T, state_dim), dtype=np.float32)
+    action = np.empty((T, action_dim), dtype=np.float32)
 
     for t, frame_idx in enumerate(range(ep_from, ep_to)):
         sample = ds[frame_idx]
         agentview[t] = to_uint8_hwc(sample[agentview_key], image_size)
-        eye_in_hand[t] = to_uint8_hwc(sample[EYE_IN_HAND_KEY], image_size)
+        eye_in_hand[t] = to_uint8_hwc(sample[eye_in_hand_key], image_size)
         state[t] = sample["observation.state"].numpy()
         action[t] = sample["action"].numpy()
 
-    ee_states = np.concatenate([state[:, 7:10], state[:, 10:13]], axis=1).astype(np.float32)
-    gripper_states = state[:, 14:16].astype(np.float32)
+    pos_a, pos_b = state_layout["eef_pos"]
+    quat_a, _ = state_layout["eef_quat"]
+    grip_a, grip_b = state_layout["gripper_qpos"]
+    # Lotus expects ee_states (T, 6) → pos(3) + first 3 components of quat (drop w).
+    ee_states = np.concatenate(
+        [state[:, pos_a:pos_b], state[:, quat_a:quat_a + 3]], axis=1
+    ).astype(np.float32)
+    gripper_states = state[:, grip_a:grip_b].astype(np.float32)
     joint_states = np.zeros((T, 7), dtype=np.float32)
 
     return {
@@ -124,7 +205,11 @@ def main():
                    help="Which LeRobot agentview camera to map to LIBERO agentview_rgb")
     p.add_argument("--image-size", type=int, default=128,
                    help="Resize images to this square size (LIBERO default 128). Use 0 to keep original.")
-    p.add_argument("--max-episodes", type=int, default=None, help="Optional cap on episode count")
+    p.add_argument("--max-episodes", type=int, default=None,
+                   help="Randomly sample this many episodes (with --random-seed)")
+    p.add_argument("--episode-indices", type=str, default=None,
+                   help="Comma-separated episode indices to convert (overrides --max-episodes)")
+    p.add_argument("--random-seed", type=int, default=42, help="Seed for random episode sampling")
     p.add_argument("--task-name", type=str, default="lerobot_task",
                    help="Stored as problem_info attribute on the data group")
     p.add_argument("--root", type=str, default=None,
@@ -132,15 +217,31 @@ def main():
     args = p.parse_args()
 
     image_size = args.image_size if args.image_size > 0 else None
-    agentview_key = AGENTVIEW_CHOICES[args.agentview]
+    agentview_base = AGENTVIEW_CHOICES[args.agentview]
 
     print(f"Loading LeRobotDataset({args.repo_id}) ...")
-    ds = LeRobotDataset(args.repo_id, root=args.root, download_videos=True)
-    n_ep = ds.num_episodes if args.max_episodes is None else min(ds.num_episodes, args.max_episodes)
+    ds = LeRobotDataset(args.repo_id, root=args.root, download_videos=True, video_backend="pyav")
+    features = ds.meta.info["features"]
+    agentview_key = _resolve_image_key(features, agentview_base)
+    eye_in_hand_key = _resolve_image_key(features, EYE_IN_HAND_KEY)
+    state_layout = _resolve_state_layout(features)
+
+    if args.episode_indices is not None:
+        ep_indices = [int(x) for x in args.episode_indices.split(",")]
+    elif args.max_episodes is not None:
+        import random
+        random.seed(args.random_seed)
+        ep_indices = sorted(random.sample(range(ds.num_episodes), min(args.max_episodes, ds.num_episodes)))
+    else:
+        ep_indices = list(range(ds.num_episodes))
+
+    n_ep = len(ep_indices)
     print(f"  num_episodes={ds.num_episodes}, using={n_ep}, fps={ds.fps}")
     print(f"  agentview={agentview_key} -> agentview_rgb")
-    print(f"  {EYE_IN_HAND_KEY} -> eye_in_hand_rgb")
+    print(f"  {eye_in_hand_key} -> eye_in_hand_rgb")
+    print(f"  state_layout={state_layout}")
     print(f"  image_size={image_size or 'native'}")
+    print(f"  episode_indices[:5]={ep_indices[:5]}")
 
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -161,11 +262,11 @@ def main():
         grp.attrs["total"] = 0
 
         total_frames = 0
-        for ep_idx in range(n_ep):
-            ep = collect_episode(ds, ep_idx, agentview_key, image_size)
-            write_demo(grp, ep_idx, ep, args.task_name)
+        for demo_idx, ep_idx in enumerate(ep_indices):
+            ep = collect_episode(ds, ep_idx, agentview_key, eye_in_hand_key, state_layout, image_size)
+            write_demo(grp, demo_idx, ep, args.task_name)
             total_frames += ep["action"].shape[0]
-            print(f"  demo_{ep_idx}: T={ep['action'].shape[0]}")
+            print(f"  demo_{demo_idx} (ep={ep_idx}): T={ep['action'].shape[0]}")
 
         grp.attrs["total"] = total_frames
 
