@@ -25,6 +25,7 @@ from pathlib import Path
 
 import h5py
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
@@ -533,49 +534,87 @@ def plot_tsne_grid(
     Zt2 = TSNE(n_components=2, random_state=seed, perplexity=perp, init="pca").fit_transform(Zt)
     Zn2 = TSNE(n_components=2, random_state=seed, perplexity=perp, init="pca").fit_transform(Zn)
 
-    cmap_sub = plt.get_cmap("tab10")
+    n_sub = len(subtask_labels)
+    if n_sub <= 10:
+        sub_colors = [plt.get_cmap("tab10")(i) for i in range(n_sub)]
+    else:
+        # 13+ class: tab20 (20 distinct hues) 사용
+        sub_colors = [plt.get_cmap("tab20")(i) for i in range(n_sub)]
+    # marker 도 sub-task 마다 다르게 (색 비슷해 보이는 경우 모양으로 구별)
+    sub_markers = ["o", "s", "^", "D", "P", "X", "v", "<", ">", "*", "h", "p", "H"]
+
     cmap_cam = plt.get_cmap("Set1")
 
     fig, axes = plt.subplots(2, 2, figsize=(13, 12))
     sub_keys = sorted(subtask_labels.keys())
 
-    def panel(ax, Z2, labels, label_names, cmap, title, mark_emoji):
+    def panel(ax, Z2, labels, label_names, title, mark_emoji,
+              colors=None, cmap=None, markers=None, show_legend=True,
+              legend_ncol=None, legend_fontsize=7):
         for c, name in enumerate(label_names):
             m = labels == c
             if not m.any():
                 continue
+            color = colors[c] if colors is not None else cmap(c)
+            marker = markers[c % len(markers)] if markers is not None else "o"
             ax.scatter(
                 Z2[m, 0],
                 Z2[m, 1],
-                s=18,
-                color=cmap(c),
-                label=shorten(name, 38),
-                alpha=0.7,
-                edgecolors="none",
+                s=20,
+                color=color,
+                marker=marker,
+                label=f"{c:>2} {shorten(name, 36)}",
+                alpha=0.75,
+                edgecolors="black",
+                linewidths=0.25,
             )
         ax.set_title(f"{mark_emoji} {title}", fontsize=11)
         ax.set_xticks([])
         ax.set_yticks([])
-        ax.legend(fontsize=8, loc="best", framealpha=0.85, markerscale=1.2)
+        if show_legend:
+            ncol = legend_ncol if legend_ncol is not None else (2 if len(label_names) > 8 else 1)
+            ax.legend(fontsize=legend_fontsize, loc="best", framealpha=0.85,
+                      markerscale=1.2, ncol=ncol)
 
-    # 4 panels
+    # 4 panels — SUB-TASK 패널은 legend 없이 (옆 camera 패널로 이동),
+    # CAMERA 패널 (top-right) 에 sub-task 13개 marker→task legend 별도 표시
     panel(
         axes[0, 0], Zt2, sid,
-        [subtask_labels[k] for k in sub_keys], cmap_sub,
+        [subtask_labels[k] for k in sub_keys],
         "z_task colored by SUB-TASK   (* should separate)", "[good?]",
+        colors=sub_colors, markers=sub_markers, show_legend=False,
     )
     panel(
-        axes[0, 1], Zt2, cid, camera_names, cmap_cam,
+        axes[0, 1], Zt2, cid, camera_names,
         "z_task colored by CAMERA    (should not separate)", "[leak?]",
+        cmap=cmap_cam, show_legend=False,
     )
     panel(
         axes[1, 0], Zn2, sid,
-        [subtask_labels[k] for k in sub_keys], cmap_sub,
+        [subtask_labels[k] for k in sub_keys],
         "z_nuis colored by SUB-TASK  (should not separate)", "[leak?]",
+        colors=sub_colors, markers=sub_markers, show_legend=False,
     )
     panel(
-        axes[1, 1], Zn2, cid, camera_names, cmap_cam,
+        axes[1, 1], Zn2, cid, camera_names,
         "z_nuis colored by CAMERA    (* should separate)", "[good?]",
+        cmap=cmap_cam, show_legend=True, legend_fontsize=8,
+    )
+
+    # top-right (z_task colored by CAMERA) 에 sub-task 13개 marker -> task name legend 추가
+    sub_legend_handles = [
+        Line2D([0], [0], marker=sub_markers[i % len(sub_markers)],
+               color="none", markerfacecolor=sub_colors[i],
+               markeredgecolor="black", markeredgewidth=0.4,
+               markersize=8,
+               label=f"{i:>2} {shorten(subtask_labels[sub_keys[i]], 34)}")
+        for i in range(n_sub)
+    ]
+    axes[0, 1].legend(
+        handles=sub_legend_handles,
+        title="sub-task id (shape + color)",
+        title_fontsize=8,
+        fontsize=7, loc="best", framealpha=0.9, ncol=(2 if n_sub > 8 else 1),
     )
 
     fig.suptitle(

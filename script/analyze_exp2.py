@@ -177,45 +177,83 @@ def plot_sample_gram_cross(
     ep_idx: np.ndarray,
     subtask_labels: dict[int, str],
     out_path: Path,
+    camera_names: list[str] | None = None,
 ) -> None:
-    """Sample×sample cosine, 13 sub-task block, compact."""
-    sort_key = np.lexsort((cid, ep_idx, sid))
-    Zt = Z_task[sort_key]
-    Zn = Z_nuis[sort_key]
-    sid_s = sid[sort_key]
+    """Sample x sample cosine.
+    z_task : sub-task -> episode -> camera 정렬 (sub-task 블록)
+    z_nuis : camera -> sub-task -> episode 정렬 (camera 블록)
+    """
+    # z_task: sub-task 정렬
+    sort_t = np.lexsort((cid, ep_idx, sid))
+    Zt = Z_task[sort_t]
+    sid_t = sid[sort_t]
+
+    # z_nuis: camera 정렬
+    sort_n = np.lexsort((ep_idx, sid, cid))
+    Zn = Z_nuis[sort_n]
+    cid_n = cid[sort_n]
 
     gram_t = Zt @ Zt.T
     gram_n = Zn @ Zn.T
     n = gram_t.shape[0]
 
-    fig, axes = plt.subplots(1, 2, figsize=(16, 8.5))
-    boundaries_sub = np.where(np.diff(sid_s) != 0)[0]
+    fig, axes = plt.subplots(1, 2, figsize=(16, 9.5))
 
-    for ax, gram, label in [
-        (axes[0], gram_t, "z_task"),
-        (axes[1], gram_n, "z_nuis"),
-    ]:
-        off_diag = gram[~np.eye(n, dtype=bool)]
-        vlo, vhi = np.percentile(off_diag, [2, 98])
-        vrange = max(abs(vlo), abs(vhi), 0.1)
-        im = ax.imshow(gram, cmap="bwr", vmin=-vrange, vmax=vrange,
-                        interpolation="nearest", aspect="equal")
-        for b in boundaries_sub:
-            ax.axvline(b + 0.5, color="k", linewidth=0.8, alpha=0.7)
-            ax.axhline(b + 0.5, color="k", linewidth=0.8, alpha=0.7)
-        ax.set_title(label, fontsize=14, fontweight="bold", pad=8)
-        ax.set_xticks([]); ax.set_yticks([])
-        plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="cosine similarity")
+    # ----- z_task panel (sub-task 정렬) -----
+    boundaries_t = np.where(np.diff(sid_t) != 0)[0]
+    unique_st = sorted(set(int(x) for x in sid_t))
+    tick_pos_t = [float(np.where(sid_t == st)[0].mean()) for st in unique_st]
+    tick_labels_t = [str(st) for st in unique_st]
 
-        # sub-task id 라벨 (블록 중앙)
-        for st in sorted(set(int(x) for x in sid_s)):
-            m = sid_s == st
-            pos = float(np.where(m)[0].mean())
-            ax.text(pos, -n * 0.015, f"{st}",
-                    ha="center", va="bottom", fontsize=9, fontweight="bold")
+    ax = axes[0]
+    off_diag = gram_t[~np.eye(n, dtype=bool)]
+    vlo, vhi = np.percentile(off_diag, [2, 98])
+    vrange = max(abs(vlo), abs(vhi), 0.1)
+    im = ax.imshow(gram_t, cmap="bwr", vmin=-vrange, vmax=vrange,
+                   interpolation="nearest", aspect="equal")
+    for b in boundaries_t:
+        ax.axvline(b + 0.5, color="k", linewidth=0.8, alpha=0.7)
+        ax.axhline(b + 0.5, color="k", linewidth=0.8, alpha=0.7)
+    ax.set_title("z_task  (sorted by sub-task)", fontsize=13, fontweight="bold", pad=12)
+    ax.set_xticks(tick_pos_t); ax.set_xticklabels(tick_labels_t, fontsize=9)
+    ax.set_yticks(tick_pos_t); ax.set_yticklabels(tick_labels_t, fontsize=9)
+    ax.tick_params(axis="both", length=3, pad=4)
+    ax.set_xlabel("sub-task id", fontsize=10)
+    ax.set_ylabel("sub-task id", fontsize=10)
+    plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="cosine similarity")
+
+    # ----- z_nuis panel (camera 정렬) -----
+    boundaries_n = np.where(np.diff(cid_n) != 0)[0]
+    unique_cam = sorted(set(int(x) for x in cid_n))
+    tick_pos_n = [float(np.where(cid_n == c)[0].mean()) for c in unique_cam]
+    if camera_names is not None:
+        tick_labels_n = [
+            f"{c}\n{camera_names[c].split('_')[-1]}" if c < len(camera_names) else str(c)
+            for c in unique_cam
+        ]
+    else:
+        tick_labels_n = [str(c) for c in unique_cam]
+
+    ax = axes[1]
+    off_diag = gram_n[~np.eye(n, dtype=bool)]
+    vlo, vhi = np.percentile(off_diag, [2, 98])
+    vrange = max(abs(vlo), abs(vhi), 0.1)
+    im = ax.imshow(gram_n, cmap="bwr", vmin=-vrange, vmax=vrange,
+                   interpolation="nearest", aspect="equal")
+    for b in boundaries_n:
+        ax.axvline(b + 0.5, color="k", linewidth=0.8, alpha=0.7)
+        ax.axhline(b + 0.5, color="k", linewidth=0.8, alpha=0.7)
+    ax.set_title("z_nuis  (sorted by camera)", fontsize=13, fontweight="bold", pad=12)
+    ax.set_xticks(tick_pos_n); ax.set_xticklabels(tick_labels_n, fontsize=9)
+    ax.set_yticks(tick_pos_n); ax.set_yticklabels(tick_labels_n, fontsize=9)
+    ax.tick_params(axis="both", length=3, pad=4)
+    ax.set_xlabel("camera id", fontsize=10)
+    ax.set_ylabel("camera id", fontsize=10)
+    plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="cosine similarity")
 
     fig.suptitle(
-        f"Cross-task: sample × sample cosine (n={n})  ·  sorted by sub-task → episode → camera",
+        f"Cross-task: sample x sample cosine (n={n})  ·  "
+        f"z_task sorted by sub-task, z_nuis sorted by camera",
         fontsize=12, y=0.97,
     )
 
@@ -227,7 +265,7 @@ def plot_sample_gram_cross(
              fontsize=8, family="monospace",
              bbox=dict(boxstyle="round,pad=0.4", facecolor="#f0f0f0", edgecolor="none"))
 
-    plt.subplots_adjust(top=0.92, bottom=0.30, left=0.05, right=0.97, wspace=0.20)
+    plt.subplots_adjust(top=0.92, bottom=0.32, left=0.06, right=0.97, wspace=0.22)
     plt.savefig(out_path, dpi=150)
     plt.close(fig)
 
@@ -326,6 +364,7 @@ def analyze_run(run_dir: Path, ckpt_name: str, knn_k: int, device: str) -> dict:
     plot_sample_gram_cross(
         Zt_te, Zn_te, sid_te, cid_te, ep_te,
         subtask_to_instr, out / "sample_gram.png",
+        camera_names=cams,
     )
 
     # C. t-SNE 4 panel

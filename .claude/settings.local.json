@@ -2,7 +2,10 @@
   "permissions": {
     "allow": [
       "Bash(python3 -c 'import json,sys; m=json.load\\(sys.stdin\\); print\\('\\\\''top keys:'\\\\'', list\\(m.keys\\(\\)\\)[:10]\\); *)",
-      "Bash(git checkout *)"
+      "Bash(git checkout *)",
+      "Bash(python *)",
+      "Bash(python3 *)",
+      "Bash(docker exec dinov3_test *)"
     ]
   }
 }
